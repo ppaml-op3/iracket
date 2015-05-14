@@ -3,16 +3,16 @@
 (require racket/string
          racket/match
          racket/place
+         racket/contract
          (for-syntax racket/base)
          json
-         ffi/unsafe
          net/zmq
          "./ipython.rkt")
 
 (provide main)
 
 ;; implements the ipython heartbeat protocol
-(define (heartbeat socket _)
+(define (heartbeat socket _req _rep)
   (define (loop)
     (printf "heartbeat loop start\n")
     (define msg (socket-recv! socket))
@@ -22,62 +22,81 @@
   (loop))
 
 ;; implements shell and control protocol
-(define (shell socket worker-thread)
+(define (shell socket req rep)
   (printf "shell thread start\n")
   (define (loop)
     (define msg (receive-message! socket))
     (printf "shell: ~a\n" msg)
-    (thread-send worker-thread msg)
-    (thread-send (current-thread))
-    (define response (thread-receive))
+    (place-channel-put rep msg)
+    (place-channel-put rep req)
+    (define response (place-channel-get req))
     (printf "shell response: ~a\n" response)
     (send-message! socket response))
   (loop))
 
 (define control shell)
 
-(define (iopub socket _)
+(define (iopub socket req _rep)
   (printf "iopub thread start\n")
   (define (loop)
-    (define msg (thread-receive))
+    (define msg (place-channel-get req))
     (send-message! socket msg))
   (loop))
 
-(define (serve-socket cfg ctx socket-type port action)
+(define/contract (config->endpoint cfg kind)
+  (-> ipython-config? (symbols 'shell 'control 'iopub 'heartbeat)
+      string?)
+  (define port
+    (case kind
+      [(shell) (ipython-config-shell-port cfg)]
+      [(control) (ipython-config-control-port cfg)]
+      [(iopub) (ipython-config-iopub-port cfg)]
+      [(heartbeat) (ipython-config-hb-port cfg)]))
   (define transport (ipython-config-transport cfg))
   (define ip (ipython-config-ip cfg))
-  (define endpoint (format "~a://~a:~a" transport ip port))
+  (format "~a://~a:~a" transport ip port))
+
+(define (serve-socket ctx endpoint socket-type action)
   (call-with-socket ctx socket-type
     (lambda (socket)
       (socket-bind! socket endpoint)
       (action socket))))
 
-;; Starts the services in their own threads, except for the first in the list
-;; which is started in the current thread.
-(define (serve cfg ctx worker-thread services)
-  (for/list ([service (in-list (cdr services))])
-    (match service
-      [`(,socket-type ,port ,action)
-       (thread
-        (lambda ()
-          (serve-socket cfg ctx socket-type (port cfg)
-                        (lambda (socket) (action socket worker-thread)))))]))
-  (match-define `(,socket-type ,port ,action) (car services))
-  (serve-socket cfg ctx socket-type (port cfg)
-                (lambda (socket) (action socket worker-thread))))
+(define (serve-socket/place ctx endpoint socket-type action)
+  (define req
+    (place req
+      (define ctx (place-channel-get req))
+      (define endpoint (place-channel-get req))
+      (define socket-type (place-channel-get req))
+      (define action (place-channel-get req))
+      (serve-socket ctx endpoint socket-type
+         (lambda (socket) (action socket req)))))
+    (place-channel-put req ctx)
+    (place-channel-put req endpoint)
+    (place-channel-put req socket-type)
+    (place-channel-put req action)
+    req)
 
-;; Starts the IPython services in their own threads,
-;; except for the iopub service, which is run in the current thread.
-(define (ipython-serve cfg worker-thread)
-  (define services
-    `((PUB ,ipython-config-iopub-port ,iopub)
-      (REP ,ipython-config-hb-port ,heartbeat)
-      (ROUTER ,ipython-config-control-port ,control)
-      (ROUTER ,ipython-config-shell-port ,shell)))
+(define-struct/contract ipython-services
+  ([heartbeat place?]
+   [shell place?]
+   [control place?]
+   [iopub place?])
+  #:transparent)
+
+(define (ipython-serve cfg rep)
   (call-with-context
    (lambda (ctx)
-     (serve cfg ctx worker-thread services))
-   #:io-threads 4))
+     (make-ipython-services
+      (serve-socket/place ctx (config->endpoint cfg 'heartbeat)
+                          'REP rep heartbeat)
+      (serve-socket/place ctx (config->endpoint cfg 'shell)
+                          'ROUTER rep shell)
+      (serve-socket/place ctx (config->endpoint cfg 'control)
+                          'ROUTER rep control)
+      (serve-socket/place ctx (config->endpoint cfg 'iopub)
+                          'PUB rep iopub)))))
+
 
 (define (main config-file-path)
   (parameterize ([current-output-port (current-error-port)])
@@ -86,22 +105,22 @@
     ;; TODO check that file exists
     (define cfg (with-input-from-file config-file-path read-ipython-config))
     (printf "Kernel config: ~a" cfg)
-    (define my-thread (current-thread))
-    (define iopub-thread (thread (lambda () (ipython-serve cfg my-thread))))
+    (define-values (req rep)  (place-channel))
+    (define services (ipython-serve cfg rep))
     (print "Listener threads started.")
-    (work iopub-thread)
+    (work rep services)
     (print "Kernel terminating.")))
 
-(define (work iopub-thread)
+(define (work req services)
   (define (loop)
-    (define msg (thread-receive))
-    (define respond-to (thread-receive))
-    (define response (handle msg iopub-thread))
-    (thread-send respond-to response)
+    (define msg (place-channel-get req))
+    (define respond-to (place-channel-get req))
+    (define response (handle msg req services))
+    (place-channel-put respond-to response)
     (loop))
   (loop))
 
-(define (handle msg iopub-thread)
+(define (handle msg req services)
   (printf "received message: ~a\n" msg)
   (case (ipython-message-type msg)
     [(kernel-info-request) kernel-info]

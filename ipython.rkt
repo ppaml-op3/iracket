@@ -65,17 +65,16 @@
 ;; Parses an IPython configuration from (current-input-port).
 (define (read-ipython-config)
   (define config-json (read-json))
-  (apply make-ipython-config
-         (map (lambda (x) (hash-ref config-json x))
-              '(control_port
-                shell_port
-                transport
-                signature_scheme
-                stdin_port
-                hb_port
-                ip
-                iopub_port
-                key))))
+  (make-ipython-config
+   (hash-ref config-json 'control_port)
+   (hash-ref config-json 'shell_port)
+   (hash-ref config-json 'transport)
+   (string->symbol (hash-ref config-json 'signature_scheme))
+   (hash-ref config-json 'stdin_port)
+   (hash-ref config-json 'hb_port)
+   (hash-ref config-json 'ip)
+   (hash-ref config-json 'iopub_port)
+   (string->bytes/utf-8 (hash-ref config-json 'key))))
 
 (define ipython-connection-key (make-parameter #f))
 

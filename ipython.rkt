@@ -2,21 +2,20 @@
 
 (require racket/string
          racket/contract
-         racket/match
-         (for-syntax racket/base)
          json
-         (only-in ffi/unsafe free)
          sha
          net/zmq)
 
-(provide (struct-out ipython-config)
-         (struct-out ipython-message)
-         read-ipython-config
+(provide (struct-out config)
+         (struct-out header)
+         (struct-out message)
+         read-config
+         connection-key
          receive-message!
          send-message!)
 
-;; IPython's ZeroMQ bindings configuration.
-(define-struct/contract ipython-config
+;; IPython's ZeroMQ binding configuration.
+(define-struct/contract config
   ([control-port exact-nonnegative-integer?]
    [shell-port exact-nonnegative-integer?]
    [transport string?]
@@ -28,44 +27,50 @@
    [key bytes?])
   #:transparent)
 
-(define-struct/contract ipython-message
+;; IPython message header.
+(define-struct/contract header
   ([identifiers (listof bytes?)]
-   [parent-header jsexpr?]
+   [parent-header any/c] ;; (recursive-contract (or/c false/c header?))]
    [metadata (hash/c string? string?)]
    [message-id string?] ;; (uuid)
    [session-id string?] ;; (uuid)
    [username string?]
-   [type (symbols 'kernel-info-reply
-                  'kernel-info-request
-                  'execute-reply
-                  'execute-request
-                  'status
-                  'stream
-                  'display-data
-                  'pyout
-                  'pyin
-                  'complete-request
-                  'complete-reply
-                  'object-info-request
-                  'object-info-reply
-                  'shutdown-request
-                  'shutdown-reply
-                  'clear-output
-                  'input-request
-                  'input-reply
-                  'comm-open
-                  'comm-msg
-                  'comm-close
-                  'history-request
-                  'history-reply)]
+   [msg-type (symbols 'kernel_info_reply
+                      'kernel_info_request
+                      'execute_reply
+                      'execute_request
+                      'status
+                      'stream
+                      'display_data
+                      'pyout
+                      'pyin
+                      'complete_request
+                      'complete_reply
+                      'object_info_request
+                      'object_info_reply
+                      'shutdown_request
+                      'shutdown_reply
+                      'clear_output
+                      'input_request
+                      'input_reply
+                      'comm_open
+                      'comm_msg
+                      'comm_close
+                      'history_request
+                      'history_reply)])
+  #:transparent)
+
+;; IPython message.
+(define-struct/contract message
+  ([header header?]
    [content jsexpr?])
   #:transparent)
 
-
 ;; Parses an IPython configuration from (current-input-port).
-(define (read-ipython-config)
+(define/contract (read-config)
+  (-> config?)
   (define config-json (read-json))
-  (make-ipython-config
+  (make-config
    (hash-ref config-json 'control_port)
    (hash-ref config-json 'shell_port)
    (hash-ref config-json 'transport)
@@ -76,13 +81,16 @@
    (hash-ref config-json 'iopub_port)
    (string->bytes/utf-8 (hash-ref config-json 'key))))
 
-(define ipython-connection-key (make-parameter #f))
+;; Key for the connection to IPython. (or/c bytes? false/c).
+(define connection-key (make-parameter #f))
 
-(define (receive-message! socket)
-  (printf "receiving message")
+(define message-delimiter (string->bytes/utf-8 "<IDS|MSG>"))
+
+;; Receives an IPython message on the given socket.
+(define/contract (receive-message! socket)
+  (socket? . -> . message?)
   (define (next)
     (define blob (socket-recv! socket))
-    (printf "received blob: ~a\n" blob)
     blob)
   (define (read-until str)
     (define (read-until* acc)
@@ -100,58 +108,63 @@
   (parse-message sig idents header-data parent-header
                  metadata content))
 
-(define (parse-message sig idents header-data parent-header metadata content)
-  (define key (ipython-connection-key))
-  (unless (or (not key)
-              (equal? sig (hash-message key header-data parent-header metadata content)))
-    (error "Message from unauthenticated user."))
-  (define header-json (bytes->jsexpr header-data))
-  (make-ipython-message
+(define (parse-header idents header parent-header metadata)
+  (define parent-result
+    (cond [(hash-empty? parent-header) #f]
+          [else (parse-header idents parent-header (hasheq) metadata)]))
+  (make-header
    idents
-   (bytes->jsexpr parent-header)
+   parent-result
    (bytes->jsexpr metadata)
-   (hash-ref header-json 'msg_id)
-   (hash-ref header-json 'session)
-   (hash-ref header-json 'username)
-   (string->symbol (string-replace "_" "-" (hash-ref header-json 'msg_type)))
+   (hash-ref header 'msg_id)
+   (hash-ref header 'session)
+   (hash-ref header 'username)
+   (string->symbol (hash-ref header 'msg_type))))
+
+(define (parse-message sig idents header-bytes parent-header metadata content)
+  (define key (connection-key))
+  (define verif-sig (hash-message key header-bytes parent-header metadata content))
+  (unless (or (not key) (equal? sig verif-sig))
+    (error "Message from unauthenticated user."))
+  (make-message
+   (parse-header idents (bytes->jsexpr header-bytes) (bytes->jsexpr parent-header) metadata)
    (bytes->jsexpr content)))
 
 (define (hash-message key header-data parent-header metadata content)
   (define data (bytes-append header-data parent-header metadata content))
-  (hmac-sha256 key data))
+  (string->bytes/utf-8 (bytes->hex-string (hmac-sha256 key data))))
 
-(define message-delimiter (string->bytes/utf-8 "<IDS|MSG>"))
+(define (header->jsexpr hd)
+  (cond [hd (hasheq
+             'msg_id (header-message-id hd)
+             'username (header-username hd)
+             'session (header-session-id hd)
+             'msg_type (symbol->string (header-msg-type hd))
+             'version "5.0")]
+        [else (hasheq)]))
 
-(define (send-message! socket msg)
+;; Sends the given IPython message on the given socket.
+(define/contract (send-message! socket msg)
+  (socket? message? . -> . void?)
   (define (send-piece! data)
-    (send! socket data 'SNDMORE))
-  (define (send-last! data msg)
-    (send! socket data '()))
-  (define idents (ipython-message-identifiers msg))
-  (define header-data (hasheq
-                       'msg_id (ipython-message-message-id msg)
-                       'username (ipython-message-username msg)
-                       'session (ipython-message-session-id msg)
-                       'msg_type (ipython-message-type msg)
-                       'version "5.0"))
-  (define header (jsexpr->bytes header-data))
-  (define parent-header (jsexpr->bytes (ipython-message-parent-header msg)))
-  (define metadata (jsexpr->bytes (ipython-message-metadata msg)))
-  (define content (jsexpr->bytes (ipython-message-content msg)))
-  (define sig (hash-message (ipython-connection-key)
-                            header-data parent-header metadata content))
-  (printf "sig: ~a\n" sig)
+    (socket-send! socket data #:flags '(SNDMORE)))
+  (define (send-last! data)
+    (socket-send! socket data))
+  (define header (message-header msg))
+  (define idents (header-identifiers header))
+  (define header-bytes (jsexpr->bytes (header->jsexpr header)))
+  (define parent-bytes (jsexpr->bytes (header->jsexpr (header-parent-header header))))
+  (define metadata (jsexpr->bytes (header-metadata header)))
+  (define content (jsexpr->bytes (message-content msg)))
+  (define key (connection-key))
+  (define sig
+    (cond [key (hash-message (connection-key)
+                            header-bytes parent-bytes metadata content)]
+          [else (string->bytes/utf-8 "")]))
   (for ([ident (in-list idents)]) (send-piece! ident))
   (send-piece! message-delimiter)
   (send-piece! sig)
-  (send-piece! header)
-  (send-piece! parent-header)
+  (send-piece! header-bytes)
+  (send-piece! parent-bytes)
   (send-piece! metadata)
   (send-last! content))
-
-(define (send! socket data flags)
-  (define msg (make-msg-with-data data))
-  (dynamic-wind
-    (void)
-    (socket-send-msg! msg socket flags)
-    (free msg)))

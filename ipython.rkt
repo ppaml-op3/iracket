@@ -4,7 +4,8 @@
          racket/contract
          json
          sha
-         net/zmq)
+         net/zmq
+         "./ipython-message.rkt")
 
 (provide (struct-out config)
          (struct-out header)
@@ -27,6 +28,7 @@
    [key bytes?])
   #:transparent)
 
+
 ;; IPython message header.
 (define-struct/contract header
   ([identifiers (listof bytes?)]
@@ -35,29 +37,7 @@
    [message-id string?] ;; (uuid)
    [session-id string?] ;; (uuid)
    [username string?]
-   [msg-type (symbols 'kernel_info_reply
-                      'kernel_info_request
-                      'execute_reply
-                      'execute_request
-                      'status
-                      'stream
-                      'display_data
-                      'pyout
-                      'pyin
-                      'complete_request
-                      'complete_reply
-                      'object_info_request
-                      'object_info_reply
-                      'shutdown_request
-                      'shutdown_reply
-                      'clear_output
-                      'input_request
-                      'input_reply
-                      'comm_open
-                      'comm_msg
-                      'comm_close
-                      'history_request
-                      'history_reply)])
+   [msg-type message-type/c])
   #:transparent)
 
 ;; IPython message.
@@ -105,6 +85,7 @@
   (define parent-header (next))
   (define metadata (next))
   (define content (next))
+  (printf "received: ~a\n" content)
   (parse-message sig idents header-data parent-header
                  metadata content))
 

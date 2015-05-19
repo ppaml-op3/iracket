@@ -94,6 +94,12 @@
    (serve-socket/thread ctx cfg (ipy:config-control-port cfg) 'ROUTER worker control)
    (serve-socket/thread ctx cfg (ipy:config-iopub-port cfg) 'PUB worker iopub)))
 
+(define (kill-services services)
+  (kill-thread (ipython-services-shell services))
+  (kill-thread (ipython-services-control services))
+  (kill-thread (ipython-services-iopub services))
+  (kill-thread (ipython-services-heartbeat services)))
+
 
 (define (main config-file-path)
   (parameterize ([current-output-port (current-error-port)])
@@ -104,36 +110,61 @@
       (call-with-context
        (λ (ctx)
          (define services (ipython-serve cfg ctx (current-thread)))
-         (work services)
+         (send-status 'starting services)
+         (work cfg services)
+         (sleep 1)
+         (kill-services services)
          (print "Kernel terminating."))))))
 
-(define (work services)
+(define (send-status status services)
+  (define iopub (ipython-services-iopub services))
+  (void))
+
+(define (work cfg services)
   (define (work-loop)
     (define msg (thread-receive))
-    (printf "work received: ~a" msg)
     (define respond-to (thread-receive))
-    (define response (handle msg services))
-    (printf "work response: ~a" response)
+    (define-values (response shutdown) (handle msg cfg services))
     (thread-send respond-to response)
-    (work-loop))
+    (if shutdown
+        #f
+        (work-loop)))
   (work-loop))
 
-(define (handle msg services)
+(define (handle msg cfg services)
   (define msg-type (ipy:header-msg-type (ipy:message-header msg)))
   (case msg-type
-    [(kernel_info_request) kernel-info]
+    [(kernel_info_request) (values kernel-info #f)]
+    [(shutdown_request) (values (hasheq 'restart #f) #t)]
+    [(connect_request) (connect cfg)]
+    [(execute_request) (execute msg services)]
     [else (error (format "unknown message type: ~a" msg-type))]))
+
+(define (connect cfg)
+  (hasheq
+   'shell_port (ipy:config-shell-port cfg)
+   'iopub_port (ipy:config-iopub-port cfg)
+   'stdin_port (ipy:config-stdin-port cfg)
+   'hb_port (ipy:config-hb-port cfg)))
+
+(define (execute msg services)
+  (send-status 'busy services)
+  (define res (hasheq
+               'status "ok"
+               'user_expressions (hasheq)))
+  (send-status 'idle services)
+  res)
 
 (define kernel-info
   (hasheq
-   'protocol_version "0.0.1"
+   'protocol_version "5.0"
    'implementation "iracket"
-   'implementation_version "0.0.1"
+   'implementation_version "1.0"
    'language_info (hasheq
+                   'mimetype "text/x-racket"
                    'name "racket"
                    'version (version)
-                   'mimetype "text"
                    'file_extension "rkt")
-   'banner "IRacket 0.0.1"
+   'banner "IRacket 1.0"
    'help_links (list (hasheq 'text "Racket docs"
                              'url "http://docs.racket-lang.org"))))

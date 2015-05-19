@@ -13,11 +13,14 @@
 
 ;; implements the ipython heartbeat protocol
 (define (heartbeat socket _worker)
-  (define (loop)
+  (let loop ()
     (define msg (socket-recv! socket))
     (socket-send! socket msg)
-    (loop))
-  (loop))
+    (loop)))
+
+(define (make-response parent content)
+  (define reply-header (create-reply-header (ipy:message-header parent)))
+  (ipy:make-message reply-header content))
 
 (define (reply-type parent-type)
   (case parent-type
@@ -29,7 +32,7 @@
     [(history_request) 'history_reply]
     [else (error (format "No reply for message type: ~a" parent-type))]))
 
-(define (create-reply-header parent-header)
+(define (create-reply-header parent-header #:msg-type [msg-type #f])
   (ipy:make-header
    (ipy:header-identifiers parent-header)
    parent-header
@@ -37,34 +40,30 @@
    (uuid-generate)
    (ipy:header-session-id parent-header)
    (ipy:header-username parent-header)
-   (reply-type (ipy:header-msg-type parent-header))))
+   (if msg-type msg-type (reply-type (ipy:header-msg-type parent-header)))))
 
 ;; implements shell and control protocol
 (define (shell-like who socket worker)
-  (sleep 5)
-  (define (loop)
+  (let loop ()
     (define msg (ipy:receive-message! socket))
     (printf "~a: ~a\n" who msg)
     (thread-send worker msg)
     (thread-send worker (current-thread))
     (define response (thread-receive))
-    ; (define response-msg (make-response-msg response msg))
-    (define reply-header (create-reply-header (ipy:message-header msg)))
-    (define response-message (ipy:make-message reply-header response))
-    (printf "~a response: ~a\n" who response-message)
-    (ipy:send-message! socket response-message))
-  (loop))
+    (printf "~a response: ~a\n" who response)
+    (ipy:send-message! socket response)
+    (loop)))
 
 (define (shell socket worker) (shell-like 'shell socket worker))
 
 (define (control socket worker) (shell-like 'control socket worker))
 
 (define (iopub socket worker)
-  (define (loop)
+  (let loop ()
     (define msg (thread-receive))
     (printf "iopub thread sending: ~a\n" msg)
-    (ipy:send-message! socket msg))
-  (loop))
+    (ipy:send-message! socket msg)
+    (loop)))
 
 (define (serve-socket ctx endpoint socket-type action)
   (call-with-socket ctx socket-type
@@ -110,22 +109,25 @@
       (call-with-context
        (λ (ctx)
          (define services (ipython-serve cfg ctx (current-thread)))
-         (send-status 'starting services)
          (work cfg services)
          (sleep 1)
          (kill-services services)
          (print "Kernel terminating."))))))
 
-(define (send-status status services)
-  (define iopub (ipython-services-iopub services))
-  (void))
+(define (send-status status parent-header services)
+  (define out (ipython-services-iopub services))
+  (define header (create-reply-header parent-header #:msg-type 'status))
+  (define msg (ipy:make-message header (hasheq 'execution_state (symbol->string status))))
+  (thread-send out msg))
 
 (define (work cfg services)
   (define (work-loop)
     (define msg (thread-receive))
     (define respond-to (thread-receive))
+    (send-status 'busy (ipy:message-header msg) services)
     (define-values (response shutdown) (handle msg cfg services))
     (thread-send respond-to response)
+    (send-status 'idle (ipy:message-header msg) services)
     (if shutdown
         #f
         (work-loop)))
@@ -133,12 +135,14 @@
 
 (define (handle msg cfg services)
   (define msg-type (ipy:header-msg-type (ipy:message-header msg)))
-  (case msg-type
-    [(kernel_info_request) (values kernel-info #f)]
-    [(shutdown_request) (values (hasheq 'restart #f) #t)]
-    [(connect_request) (connect cfg)]
-    [(execute_request) (execute msg services)]
-    [else (error (format "unknown message type: ~a" msg-type))]))
+  (define-values (resp shutdown)
+    (case msg-type
+      [(kernel_info_request) (values kernel-info #f)]
+      [(shutdown_request) (values (hasheq 'restart #f) #t)]
+      [(connect_request) (values (connect cfg) #f)]
+      [(execute_request) (values (execute msg services) #f)]
+      [else (error (format "unknown message type: ~a" msg-type))]))
+  (values (make-response msg resp) shutdown))
 
 (define (connect cfg)
   (hasheq
@@ -148,23 +152,24 @@
    'hb_port (ipy:config-hb-port cfg)))
 
 (define (execute msg services)
-  (send-status 'busy services)
-  (define res (hasheq
-               'status "ok"
-               'user_expressions (hasheq)))
-  (send-status 'idle services)
-  res)
+  (hasheq
+   'status "ok"
+   'user_expressions (hasheq)))
 
 (define kernel-info
   (hasheq
-   'protocol_version "5.0"
-   'implementation "iracket"
-   'implementation_version "1.0"
    'language_info (hasheq
                    'mimetype "text/x-racket"
                    'name "racket"
+                   'pygments_lexer "racket"
                    'version (version)
-                   'file_extension "rkt")
+                   'file_extension ".rkt")
+
+   'implementation "iracket"
+   'implementation_version "1.0"
+   'protocol_version "5.0"
+
    'banner "IRacket 1.0"
-   'help_links (list (hasheq 'text "Racket docs"
-                             'url "http://docs.racket-lang.org"))))
+   'help_links (list (hasheq
+                      'text "Racket docs"
+                      'url "http://docs.racket-lang.org"))))

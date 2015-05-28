@@ -3,6 +3,7 @@
 (require racket/string
          racket/match
          racket/contract
+         racket/sandbox
          (for-syntax racket/base)
          json
          net/zmq
@@ -18,8 +19,9 @@
     (socket-send! socket msg)
     (loop)))
 
-(define (make-response parent content)
-  (define reply-header (create-reply-header (ipy:message-header parent)))
+(define (make-response parent content #:msg-type [msg-type #f])
+  (define reply-header
+    (make-reply-header (ipy:message-header parent) #:msg-type msg-type))
   (ipy:make-message reply-header content))
 
 (define (reply-type parent-type)
@@ -32,7 +34,7 @@
     [(history_request) 'history_reply]
     [else (error (format "No reply for message type: ~a" parent-type))]))
 
-(define (create-reply-header parent-header #:msg-type [msg-type #f])
+(define (make-reply-header parent-header #:msg-type [msg-type #f])
   (ipy:make-header
    (ipy:header-identifiers parent-header)
    parent-header
@@ -99,48 +101,65 @@
   (kill-thread (ipython-services-iopub services))
   (kill-thread (ipython-services-heartbeat services)))
 
+(define (send-stream msg services stream str)
+  (thread-send (ipython-services-iopub services)
+               (make-response msg (hasheq 'name stream
+                                          'text str)
+                              #:msg-type 'stream)))
+
+(define (send-exec-result msg services execution-count data)
+  (thread-send (ipython-services-iopub services)
+               (make-response msg (hasheq 'execution_count execution-count
+                                          'data data
+                                          'metadata (hasheq))
+                              #:msg-type 'execute_result)))
+
+(define execution-count 0)
 
 (define (main config-file-path)
   (parameterize ([current-output-port (current-error-port)])
     (print "Kernel starting.\n")
     ;; TODO check that file exists
     (define cfg (with-input-from-file config-file-path ipy:read-config))
-    (parameterize ([ipy:connection-key (ipy:config-key cfg)])
+    (parameterize ([ipy:connection-key (ipy:config-key cfg)]
+                   [sandbox-output 'string]
+                   [sandbox-error-output 'string]
+                   [sandbox-propagate-exceptions #f])
+      (define e (make-evaluator 'racket/base))
+
       (call-with-context
        (λ (ctx)
          (define services (ipython-serve cfg ctx (current-thread)))
-         (work cfg services)
+         (work cfg services e)
          (sleep 1)
          (kill-services services)
          (print "Kernel terminating."))))))
 
 (define (send-status status parent-header services)
   (define out (ipython-services-iopub services))
-  (define header (create-reply-header parent-header #:msg-type 'status))
+  (define header (make-reply-header parent-header #:msg-type 'status))
   (define msg (ipy:make-message header (hasheq 'execution_state (symbol->string status))))
   (thread-send out msg))
 
-(define (work cfg services)
+(define (work cfg services e)
   (define (work-loop)
     (define msg (thread-receive))
     (define respond-to (thread-receive))
     (send-status 'busy (ipy:message-header msg) services)
-    (define-values (response shutdown) (handle msg cfg services))
+    (define-values (response shutdown) (handle msg cfg services e))
     (thread-send respond-to response)
     (send-status 'idle (ipy:message-header msg) services)
-    (if shutdown
-        #f
-        (work-loop)))
+    (unless shutdown (work-loop)))
   (work-loop))
 
-(define (handle msg cfg services)
+(define (handle msg cfg services e)
   (define msg-type (ipy:header-msg-type (ipy:message-header msg)))
   (define-values (resp shutdown)
     (case msg-type
       [(kernel_info_request) (values kernel-info #f)]
       [(shutdown_request) (values (hasheq 'restart #f) #t)]
       [(connect_request) (values (connect cfg) #f)]
-      [(execute_request) (values (execute msg services) #f)]
+      [(execute_request) (values (execute msg services e) #f)]
       [else (error (format "unknown message type: ~a" msg-type))]))
   (values (make-response msg resp) shutdown))
 
@@ -151,9 +170,20 @@
    'stdin_port (ipy:config-stdin-port cfg)
    'hb_port (ipy:config-hb-port cfg)))
 
-(define (execute msg services)
+(define (execute msg services e)
+  (set! execution-count (add1 execution-count))
+  (call-with-values
+   (λ () (e (hash-ref (ipy:message-content msg) 'code)))
+   (λ v
+     (send-exec-result msg services execution-count
+                       (hasheq 'text/plain (format "~a" (match v
+                                                          [(list v*) v*]
+                                                          [else v]))))))
+  (send-stream msg services "stdout" (get-output e))
+  (send-stream msg services "stderr" (get-error-output e))
   (hasheq
    'status "ok"
+   'execution_count execution-count
    'user_expressions (hasheq)))
 
 (define kernel-info

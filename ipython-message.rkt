@@ -20,6 +20,7 @@
 (define unknown-message-type/c
   (symbols 'status
            'stream
+           'execute_result
            'pyout
            'pyin
            'clear_output

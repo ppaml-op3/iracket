@@ -4,8 +4,11 @@
          racket/match
          racket/contract
          racket/sandbox
+         pict
+         file/convertible
          (for-syntax racket/base)
          json
+         net/base64
          net/zmq
          libuuid
          (prefix-in ipy: "./ipython.rkt"))
@@ -124,8 +127,14 @@
     (parameterize ([ipy:connection-key (ipy:config-key cfg)]
                    [sandbox-output 'string]
                    [sandbox-error-output 'string]
-                   [sandbox-propagate-exceptions #f])
-      (define e (make-evaluator 'racket/base))
+                   [sandbox-propagate-exceptions #f]
+                   [sandbox-eval-limits (list 30 50)]
+                   [sandbox-memory-limit 200]
+                   [sandbox-namespace-specs (list sandbox-make-namespace
+                                                  'file/convertible)]
+                   [sandbox-path-permissions (list (list 'read "/"))])
+      (define e (make-evaluator 'gamble
+                                #:allow-for-require '(gamble/viz)))
 
       (call-with-context
        (λ (ctx)
@@ -170,15 +179,32 @@
    'stdin_port (ipy:config-stdin-port cfg)
    'hb_port (ipy:config-hb-port cfg)))
 
+(define (make-display-text vs)
+  (define v (match vs
+              [(list v) v]
+              [else vs]))
+  (if (void? v)
+      '()
+      (list (cons 'text/plain (format "~a" v)))))
+
+(define (make-display-png vs)
+  (define png (match vs
+                [(list (? convertible? p)) (convert p 'png-bytes)]
+                [else #f]))
+  (if png
+      (list (cons 'image/png (bytes->string/latin-1 (base64-encode png))))
+      '()))
+
 (define (execute msg services e)
   (set! execution-count (add1 execution-count))
   (call-with-values
    (λ () (e (hash-ref (ipy:message-content msg) 'code)))
    (λ v
+     (define results (append (make-display-text v)
+                                (make-display-png v)))
+     (unless (null? results)
      (send-exec-result msg services execution-count
-                       (hasheq 'text/plain (format "~a" (match v
-                                                          [(list v*) v*]
-                                                          [else v]))))))
+                       (make-hasheq results)))))
   (send-stream msg services "stdout" (get-output e))
   (send-stream msg services "stderr" (get-error-output e))
   (hasheq
@@ -193,7 +219,9 @@
                    'name "racket"
                    'pygments_lexer "racket"
                    'version (version)
-                   'file_extension ".rkt")
+                   'file_extension ".rkt"
+                   'codemirror_mode "Scheme"
+                   'pygments_lexer "Scheme")
 
    'implementation "iracket"
    'implementation_version "1.0"

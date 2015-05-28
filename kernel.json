@@ -1,0 +1,5 @@
+{
+ "argv": ["racket", "-t", "~/src/ppaml/iracket/iracket.rkt", "-m", "{connection_file}"],
+ "display_name": "Racket",
+ "language": "racket"
+}

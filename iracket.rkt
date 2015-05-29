@@ -170,8 +170,31 @@
       [(shutdown_request) (values (hasheq 'restart #f) #t)]
       [(connect_request) (values (connect cfg) #f)]
       [(execute_request) (values (execute msg services e) #f)]
+      [(complete_request) (values (complete msg services e) #f)]
       [else (error (format "unknown message type: ~a" msg-type))]))
   (values (make-response msg resp) shutdown))
+
+(define/contract (string-prefix? prefix word)
+  (string? string? . -> . boolean?)
+  (define len (string-length prefix))
+  (equal? prefix (substring word 0 (min (string-length word) len))))
+
+(define (complete msg services e)
+  (define code (hash-ref (ipy:message-content msg) 'code))
+  (define cursor-pos (hash-ref (ipy:message-content msg) 'cursor_pos))
+  (define prefix (car (regexp-match #px"[^\\s,)(]*$" code 0 cursor-pos)))
+  (define suffix (car (regexp-match #px"^[^\\s,)(]*" code (sub1 cursor-pos))))
+  (define words (call-in-sandbox-context e namespace-mapped-symbols))
+  (define matches
+    (sort (filter (λ (w) (string-prefix? prefix w))
+                  (map symbol->string words))
+          string<=?))
+  (hasheq
+   'matches matches
+   'cursor_start (- cursor-pos (string-length prefix))
+   'cursor_end (+ cursor-pos (string-length suffix) -1)
+   'status "ok"))
+
 
 (define (connect cfg)
   (hasheq

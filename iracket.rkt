@@ -248,7 +248,7 @@
                    'name "Gamble"
                    'version (version)
                    'file_extension ".rkt"
-                   'pygments_mode "racket"
+                   'pygments_lexer "racket"
                    'codemirror_mode "scheme")
 
    'implementation "igamble"

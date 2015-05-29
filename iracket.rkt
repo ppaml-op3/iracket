@@ -4,6 +4,7 @@
          racket/match
          racket/contract
          racket/sandbox
+         setup/dirs
          pict
          file/convertible
          (for-syntax racket/base)
@@ -51,11 +52,11 @@
 (define (shell-like who socket worker)
   (let loop ()
     (define msg (ipy:receive-message! socket))
-    (printf "~a: ~a\n" who msg)
+    (printf "~a received: ~a\n" who (ipy:header-msg-type (ipy:message-header msg)))
     (thread-send worker msg)
     (thread-send worker (current-thread))
     (define response (thread-receive))
-    (printf "~a response: ~a\n" who response)
+    (printf "~a response: ~a\n" who (ipy:header-msg-type (ipy:message-header response)))
     (ipy:send-message! socket response)
     (loop)))
 
@@ -66,7 +67,7 @@
 (define (iopub socket worker)
   (let loop ()
     (define msg (thread-receive))
-    (printf "iopub thread sending: ~a\n" msg)
+    (printf "iopub thread sending: ~a\n" (ipy:header-msg-type (ipy:message-header msg)))
     (ipy:send-message! socket msg)
     (loop)))
 
@@ -212,22 +213,28 @@
    'execution_count execution-count
    'user_expressions (hasheq)))
 
+(define doc-dir
+  (match (find-doc-dir)
+    [#f  "http://docs.racket-lang.org"]
+    [d (string-append "file://" (path->string (build-path d "index.html")))]))
+
 (define kernel-info
   (hasheq
    'language_info (hasheq
-                   'mimetype "text/x-racket"
-                   'name "racket"
-                   'pygments_lexer "racket"
+                   'mimetype "text/x-gamble"
+                   'name "Gamble"
                    'version (version)
                    'file_extension ".rkt"
-                   'codemirror_mode "Scheme"
-                   'pygments_lexer "Scheme")
+                   'pygments_mode "racket"
+                   'codemirror_mode "scheme")
 
-   'implementation "iracket"
+   'implementation "igamble"
    'implementation_version "1.0"
    'protocol_version "5.0"
 
-   'banner "IRacket 1.0"
+   'language "Gamble"
+
+   'banner "IGamble 1.0"
    'help_links (list (hasheq
                       'text "Racket docs"
-                      'url "http://docs.racket-lang.org"))))
+                      'url doc-dir))))

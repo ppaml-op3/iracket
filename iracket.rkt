@@ -13,16 +13,10 @@
          net/base64
          net/zmq
          libuuid
+         "./ipython-services.rkt"
          (prefix-in ipy: "./ipython.rkt"))
 
 (provide main)
-
-;; implements the ipython heartbeat protocol
-(define (heartbeat socket _worker)
-  (let loop ()
-    (define msg (socket-recv! socket))
-    (socket-send! socket msg)
-    (loop)))
 
 (define (make-response parent content #:msg-type [msg-type #f])
   (define reply-header
@@ -49,62 +43,6 @@
    (ipy:header-username parent-header)
    (if msg-type msg-type (reply-type (ipy:header-msg-type parent-header)))))
 
-;; implements shell and control protocol
-(define (shell-like who socket worker)
-  (let loop ()
-    (define msg (ipy:receive-message! socket))
-    (printf "~a received: ~a\n" who (ipy:header-msg-type (ipy:message-header msg)))
-    (thread-send worker msg)
-    (thread-send worker (current-thread))
-    (define response (thread-receive))
-    (printf "~a response: ~a\n" who (ipy:header-msg-type (ipy:message-header response)))
-    (ipy:send-message! socket response)
-    (loop)))
-
-(define (shell socket worker) (shell-like 'shell socket worker))
-
-(define (control socket worker) (shell-like 'control socket worker))
-
-(define (iopub socket worker)
-  (let loop ()
-    (define msg (thread-receive))
-    (printf "iopub thread sending: ~a\n" (ipy:header-msg-type (ipy:message-header msg)))
-    (ipy:send-message! socket msg)
-    (loop)))
-
-(define (serve-socket ctx endpoint socket-type action)
-  (call-with-socket ctx socket-type
-    (lambda (socket)
-      (socket-bind! socket endpoint)
-      (action socket))))
-
-(define-struct/contract ipython-services
-  ([heartbeat thread?]
-   [shell thread?]
-   [control thread?]
-   [iopub thread?])
-  #:transparent)
-
-(define (serve-socket/thread ctx cfg port socket-type worker action)
-  (define transport (ipy:config-transport cfg))
-  (define ip (ipy:config-ip cfg))
-  (define endpoint (format "~a://~a:~a" transport ip port))
-  (thread
-   (λ () (serve-socket ctx endpoint socket-type
-                       (λ (socket) (action socket worker))))))
-
-(define (ipython-serve cfg ctx worker)
-  (make-ipython-services
-   (serve-socket/thread ctx cfg (ipy:config-hb-port cfg) 'REP worker heartbeat)
-   (serve-socket/thread ctx cfg (ipy:config-shell-port cfg) 'ROUTER worker shell)
-   (serve-socket/thread ctx cfg (ipy:config-control-port cfg) 'ROUTER worker control)
-   (serve-socket/thread ctx cfg (ipy:config-iopub-port cfg) 'PUB worker iopub)))
-
-(define (kill-services services)
-  (kill-thread (ipython-services-shell services))
-  (kill-thread (ipython-services-control services))
-  (kill-thread (ipython-services-iopub services))
-  (kill-thread (ipython-services-heartbeat services)))
 
 (define (send-stream msg iopub stream str)
   (thread-send iopub
@@ -122,30 +60,22 @@
 (define execution-count 0)
 
 (define (main config-file-path)
-  (parameterize ([current-output-port (current-error-port)])
-    (print "Kernel starting.\n")
-    ;; TODO check that file exists
-    (define cfg (with-input-from-file config-file-path ipy:read-config))
-    (parameterize ([ipy:connection-key (ipy:config-key cfg)]
-                   [sandbox-eval-limits (list 30 50)]
-                   [sandbox-memory-limit 200]
-                   [sandbox-namespace-specs (list sandbox-make-namespace
-                                                  'file/convertible)]
-                   [sandbox-path-permissions (list (list 'read "/"))])
-      (define e
-        (parameterize ([sandbox-propagate-exceptions #f])
-          (make-evaluator '(begin)
-                          #:allow-for-require '(gamble gamble/viz))))
+  ;; ipython hides stdout, but prints stderr, so this is for debugging
+  (current-output-port (current-error-port))
+  (print "Kernel starting.\n")
+  (define cfg (with-input-from-file config-file-path ipy:read-config))
+  (parameterize ([ipy:connection-key (ipy:config-key cfg)]
+                 [sandbox-eval-limits (list 30 50)]
+                 [sandbox-memory-limit 200]
+                 [sandbox-namespace-specs (list sandbox-make-namespace
+                                                'file/convertible)]
+                 [sandbox-propagate-exceptions #f]
+                 [sandbox-path-permissions (list (list 'read "/"))])
+    (define e (make-evaluator '(begin) #:allow-for-require '(gamble gamble/viz)))
+    (call-with-services cfg (λ (services) (work cfg services e))))
+  (print "Kernel terminating."))
 
-      (call-with-context
-       (λ (ctx)
-         (define services (ipython-serve cfg ctx (current-thread)))
-         (work cfg services e)
-         (sleep 1)
-         (kill-services services)
-         (print "Kernel terminating."))))))
-
-(define (send-status status parent-header services)
+(define (send-status services status parent-header)
   (define out (ipython-services-iopub services))
   (define header (make-reply-header parent-header #:msg-type 'status))
   (define msg (ipy:make-message header (hasheq 'execution_state (symbol->string status))))
@@ -155,10 +85,10 @@
   (define (work-loop)
     (define msg (thread-receive))
     (define respond-to (thread-receive))
-    (send-status 'busy (ipy:message-header msg) services)
+    (send-status services 'busy (ipy:message-header msg))
     (define-values (response shutdown) (handle msg cfg services e))
     (thread-send respond-to response)
-    (send-status 'idle (ipy:message-header msg) services)
+    (send-status services 'idle (ipy:message-header msg))
     (unless shutdown (work-loop)))
   (work-loop))
 

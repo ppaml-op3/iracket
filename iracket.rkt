@@ -4,6 +4,7 @@
          racket/match
          racket/contract
          racket/sandbox
+         racket/port
          setup/dirs
          pict
          file/convertible
@@ -105,14 +106,14 @@
   (kill-thread (ipython-services-iopub services))
   (kill-thread (ipython-services-heartbeat services)))
 
-(define (send-stream msg services stream str)
-  (thread-send (ipython-services-iopub services)
+(define (send-stream msg iopub stream str)
+  (thread-send iopub
                (make-response msg (hasheq 'name stream
                                           'text str)
                               #:msg-type 'stream)))
 
-(define (send-exec-result msg services execution-count data)
-  (thread-send (ipython-services-iopub services)
+(define (send-exec-result msg iopub execution-count data)
+  (thread-send iopub
                (make-response msg (hasheq 'execution_count execution-count
                                           'data data
                                           'metadata (hasheq))
@@ -126,8 +127,6 @@
     ;; TODO check that file exists
     (define cfg (with-input-from-file config-file-path ipy:read-config))
     (parameterize ([ipy:connection-key (ipy:config-key cfg)]
-                   [sandbox-output 'string]
-                   [sandbox-error-output 'string]
                    [sandbox-propagate-exceptions #f]
                    [sandbox-eval-limits (list 30 50)]
                    [sandbox-memory-limit 200]
@@ -229,22 +228,33 @@
   (read-bytes-avail! bstr)
   (bytes->string/utf-8 bstr))
 
+(define (make-ipython-stream-port iopub port-name stream-name orig-msg)
+  (make-output-port
+   port-name
+   iopub
+   (λ (bstr start end enable-buffer? enable-break?)
+     (send-stream orig-msg iopub stream-name
+                  (bytes->string/utf-8 (subbytes bstr start end)))
+     (- end start))
+   void))
+
 (define (execute msg services e)
+  (define iopub (ipython-services-iopub services))
   (set! execution-count (add1 execution-count))
   (define code (hash-ref (ipy:message-content msg) 'code))
-  (define-values (stdout-pipe-in stdout-pipe-out) (make-pipe))
-  (define-values (stderr-pipe-in stderr-pipe-out) (make-pipe))
-    (call-with-values
-     (λ () (e code))
-     (λ vs
-       (match vs
-         [(list (? void?)) void]
-         [else (for ([v (in-list vs)])
-                 (define results (make-display-results v))
-                 (send-exec-result msg services execution-count
-                                   (make-hasheq results)))])))
-    (send-stream msg services "stdout" (get-output e))
-    (send-stream msg services "stderr" (get-error-output e))
+  (call-in-sandbox-context e
+   (λ ()
+     (current-output-port (make-ipython-stream-port iopub "pyout" "stdout" msg))
+     (current-error-port (make-ipython-stream-port iopub "pyerr" "stderr" msg))))
+  (call-with-values
+   (λ () (e code))
+   (λ vs
+     (match vs
+       [(list (? void?)) void]
+       [else (for ([v (in-list vs)])
+               (define results (make-display-results v))
+               (send-exec-result msg iopub execution-count
+                                 (make-hasheq results)))])))
   (hasheq
    'status "ok"
    'execution_count execution-count

@@ -127,14 +127,15 @@
     ;; TODO check that file exists
     (define cfg (with-input-from-file config-file-path ipy:read-config))
     (parameterize ([ipy:connection-key (ipy:config-key cfg)]
-                   [sandbox-propagate-exceptions #f]
                    [sandbox-eval-limits (list 30 50)]
                    [sandbox-memory-limit 200]
                    [sandbox-namespace-specs (list sandbox-make-namespace
                                                   'file/convertible)]
                    [sandbox-path-permissions (list (list 'read "/"))])
-      (define e (make-evaluator 'gamble
-                                #:allow-for-require '(gamble/viz)))
+      (define e
+        (parameterize ([sandbox-propagate-exceptions #f])
+          (make-evaluator '(begin)
+                          #:allow-for-require '(gamble gamble/viz))))
 
       (call-with-context
        (λ (ctx)
@@ -260,7 +261,7 @@
    'execution_count execution-count
    'user_expressions (hasheq)))
 
-(define doc-dir
+(define doc-url
   (match (find-doc-dir)
     [#f  "http://docs.racket-lang.org"]
     [d (string-append "file://" (path->string (build-path d "index.html")))]))
@@ -268,20 +269,20 @@
 (define kernel-info
   (hasheq
    'language_info (hasheq
-                   'mimetype "text/x-gamble"
-                   'name "Gamble"
+                   'mimetype "text/x-racket"
+                   'name "Racket"
                    'version (version)
                    'file_extension ".rkt"
                    'pygments_lexer "racket"
                    'codemirror_mode "scheme")
 
-   'implementation "igamble"
+   'implementation "iracket"
    'implementation_version "1.0"
    'protocol_version "5.0"
 
-   'language "Gamble"
+   'language "Racket"
 
-   'banner "IGamble 1.0"
+   'banner "IRacket 1.0"
    'help_links (list (hasheq
                       'text "Racket docs"
-                      'url doc-dir))))
+                      'url doc-url))))

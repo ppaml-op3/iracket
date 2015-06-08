@@ -224,11 +224,6 @@
                 (make-display-convertible 'ps-bytes 'application/postscript v #:encode base64-encode)
                 (make-display-convertible 'pdf-bytes 'application/pdf v #:encode base64-encode))))
 
-(define (read-string-avail)
-  (define bstr (bytes))
-  (read-bytes-avail! bstr)
-  (bytes->string/utf-8 bstr))
-
 (define (make-ipython-stream-port iopub port-name stream-name orig-msg)
   (make-output-port
    port-name

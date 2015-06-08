@@ -203,34 +203,48 @@
    'stdin_port (ipy:config-stdin-port cfg)
    'hb_port (ipy:config-hb-port cfg)))
 
-(define (make-display-text vs)
-  (define v (match vs
-              [(list v) v]
-              [else vs]))
-  (if (void? v)
-      '()
-      (list (cons 'text/plain (format "~a" v)))))
+(define (make-display-text v)
+  (cons 'text/plain (format "~a" v)))
 
-(define (make-display-png vs)
-  (define png (match vs
-                [(list (? convertible? p)) (convert p 'png-bytes)]
-                [else #f]))
-  (if png
-      (list (cons 'image/png (bytes->string/latin-1 (base64-encode png))))
-      '()))
+(define (make-display-convertible conversion-type mime-type v
+                                  #:encode [encode values])
+  (define result (and (convertible? v)
+                   (convert v conversion-type)))
+  (if result
+      (cons mime-type (bytes->string/latin-1 (encode result)))
+      #f))
+
+(define (make-display-results v)
+  (filter values
+          (list (or (make-display-convertible 'text 'text/plain v)
+                    (make-display-text v))
+                (make-display-convertible 'svg-bytes 'image/svg+xml v)
+                (make-display-convertible 'png-bytes 'image/png v #:encode base64-encode)
+                (make-display-convertible 'gif-bytes 'image/gif v #:encode base64-encode)
+                (make-display-convertible 'ps-bytes 'application/postscript v #:encode base64-encode)
+                (make-display-convertible 'pdf-bytes 'application/pdf v #:encode base64-encode))))
+
+(define (read-string-avail)
+  (define bstr (bytes))
+  (read-bytes-avail! bstr)
+  (bytes->string/utf-8 bstr))
 
 (define (execute msg services e)
   (set! execution-count (add1 execution-count))
-  (call-with-values
-   (λ () (e (hash-ref (ipy:message-content msg) 'code)))
-   (λ v
-     (define results (append (make-display-text v)
-                                (make-display-png v)))
-     (unless (null? results)
-     (send-exec-result msg services execution-count
-                       (make-hasheq results)))))
-  (send-stream msg services "stdout" (get-output e))
-  (send-stream msg services "stderr" (get-error-output e))
+  (define code (hash-ref (ipy:message-content msg) 'code))
+  (define-values (stdout-pipe-in stdout-pipe-out) (make-pipe))
+  (define-values (stderr-pipe-in stderr-pipe-out) (make-pipe))
+    (call-with-values
+     (λ () (e code))
+     (λ vs
+       (match vs
+         [(list (? void?)) void]
+         [else (for ([v (in-list vs)])
+                 (define results (make-display-results v))
+                 (send-exec-result msg services execution-count
+                                   (make-hasheq results)))])))
+    (send-stream msg services "stdout" (get-output e))
+    (send-stream msg services "stderr" (get-error-output e))
   (hasheq
    'status "ok"
    'execution_count execution-count

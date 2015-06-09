@@ -4,15 +4,12 @@
          racket/match
          racket/contract
          racket/sandbox
-         racket/port
          setup/dirs
          pict
          file/convertible
          (for-syntax racket/base)
          json
          net/base64
-         net/zmq
-         libuuid
          (prefix-in ipy: "./ipython-message.rkt")
          (prefix-in ipy: "./ipython-services.rkt")
          (prefix-in ipy: "./ipython.rkt"))

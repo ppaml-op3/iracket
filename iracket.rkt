@@ -33,32 +33,51 @@
   (display "Kernel terminating.\n"))
 
 (define (work cfg services e)
+  (define handlers (create-handlers cfg services e))
   (let loop ()
     (define-values (msg respond-to) (ipy:receive-request services))
     (ipy:send-status services (ipy:message-header msg) 'busy)
-    (define-values (response shutdown) (handle msg cfg services e))
+    (define-values (response shutdown) (handle handlers msg))
     (ipy:send-response services respond-to response)
     (ipy:send-status services (ipy:message-header msg) 'idle)
     (unless shutdown (loop))))
 
-(define (handle msg cfg services e)
-  (define msg-type (ipy:header-msg-type (ipy:message-header msg)))
-  (define-values (resp shutdown)
-    (case msg-type
-      [(kernel_info_request) (values kernel-info #f)]
-      [(shutdown_request) (values (hasheq 'restart #f) #t)]
-      [(connect_request) (values (connect cfg) #f)]
-      [(execute_request) (values (execute msg services e) #f)]
-      [(complete_request) (values (complete msg services e) #f)]
-      [else (error (format "unknown message type: ~a" msg-type))]))
-  (values (ipy:make-response msg resp) shutdown))
+(struct handlers
+  (execute
+   complete
+   connect
+   kernel-info
+   shutdown)
+  #:transparent)
 
+(define (create-handlers cfg services e)
+  (handlers
+   (make-execute services e)
+   (λ (msg) (complete e msg))
+   (λ (_msg) (connect cfg))
+   (λ (_msg) kernel-info)
+   (λ (_msg) (hasheq 'restart #f))))
+
+(define (handle handlers msg)
+  (define msg-type (ipy:header-msg-type (ipy:message-header msg)))
+  (define handler
+    (case msg-type
+      [(kernel_info_request) handlers-kernel-info]
+      [(connect_request) handlers-connect]
+      [(execute_request) handlers-execute]
+      [(complete_request) handlers-complete]
+      [(shutdown_request) handlers-shutdown]
+      [else (error (format "unknown message type: ~a" msg-type))]))
+  (values (ipy:make-response msg ((handler handlers) msg))
+          (eq? 'shutdown_request msg-type)))
+
+;; complete_request
 (define/contract (string-prefix? prefix word)
   (string? string? . -> . boolean?)
   (define len (string-length prefix))
   (equal? prefix (substring word 0 (min (string-length word) len))))
 
-(define (complete msg services e)
+(define (complete e msg)
   (define code (hash-ref (ipy:message-content msg) 'code))
   (define cursor-pos (hash-ref (ipy:message-content msg) 'cursor_pos))
   (define prefix (car (regexp-match #px"[^\\s,)(]*$" code 0 cursor-pos)))
@@ -74,14 +93,7 @@
    'cursor_end (+ cursor-pos (string-length suffix) -1)
    'status "ok"))
 
-
-(define (connect cfg)
-  (hasheq
-   'shell_port (ipy:config-shell-port cfg)
-   'iopub_port (ipy:config-iopub-port cfg)
-   'stdin_port (ipy:config-stdin-port cfg)
-   'hb_port (ipy:config-hb-port cfg)))
-
+;; execute_request
 (define (make-display-text v)
   (cons 'text/plain (format "~a" v)))
 
@@ -103,34 +115,30 @@
                 (make-display-convertible 'ps-bytes 'application/postscript v #:encode base64-encode)
                 (make-display-convertible 'pdf-bytes 'application/pdf v #:encode base64-encode))))
 
-(define execution-count 0)
+(define (make-execute services e)
+  (define execution-count 0)
+  (λ (msg)
+    (set! execution-count (add1 execution-count))
+    (define code (hash-ref (ipy:message-content msg) 'code))
+    (call-in-sandbox-context e
+     (λ ()
+       (current-output-port (ipy:make-stream-port services 'stdout msg))
+       (current-error-port (ipy:make-stream-port services 'stderr msg))))
+    (call-with-values
+     (λ () (e code))
+     (λ vs
+       (match vs
+         [(list (? void?)) void]
+         [else (for ([v (in-list vs)])
+                 (define results (make-display-results v))
+                 (ipy:send-exec-result msg services execution-count
+                                       (make-hasheq results)))])))
+    (hasheq
+     'status "ok"
+     'execution_count execution-count
+     'user_expressions (hasheq))))
 
-(define (execute msg services e)
-  (set! execution-count (add1 execution-count))
-  (define code (hash-ref (ipy:message-content msg) 'code))
-  (call-in-sandbox-context e
-   (λ ()
-     (current-output-port (ipy:make-stream-port services 'stdout msg))
-     (current-error-port (ipy:make-stream-port services 'stderr msg))))
-  (call-with-values
-   (λ () (e code))
-   (λ vs
-     (match vs
-       [(list (? void?)) void]
-       [else (for ([v (in-list vs)])
-               (define results (make-display-results v))
-               (ipy:send-exec-result msg services execution-count
-                                     (make-hasheq results)))])))
-  (hasheq
-   'status "ok"
-   'execution_count execution-count
-   'user_expressions (hasheq)))
-
-(define doc-url
-  (match (find-doc-dir)
-    [#f  "http://docs.racket-lang.org"]
-    [d (string-append "file://" (path->string (build-path d "index.html")))]))
-
+;; kernel_info_request
 (define kernel-info
   (hasheq
    'language_info (hasheq
@@ -150,4 +158,15 @@
    'banner "IRacket 1.0"
    'help_links (list (hasheq
                       'text "Racket docs"
-                      'url doc-url))))
+                      'url "http://docs.racket-lang.org")
+                     (hasheq
+                      'text "Gamble docs"
+                      'url "http://rmculpepper.github.io/gamble/"))))
+
+;; connect_request
+(define (connect cfg)
+  (hasheq
+   'shell_port (ipy:config-shell-port cfg)
+   'iopub_port (ipy:config-iopub-port cfg)
+   'stdin_port (ipy:config-stdin-port cfg)
+   'hb_port (ipy:config-hb-port cfg)))

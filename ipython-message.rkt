@@ -1,57 +1,110 @@
 #lang racket/base
 
 (require racket/contract
-         racket/string)
+         racket/string
+         libuuid
+         json)
 
-(provide unknown-message-type/c
-         request-message-type/c
-         reply-message-type/c
-         message-type/c
+(provide message-type/c
          mime-type/c
-;         request-message/c
-;         reply-message/c
-;         (struct-out execute-request)
-;         execute-reply-status/c
-;         (struct-out execute-reply-ok)
-;         (struct-out execute-reply-error)
-;         (struct-out execute-reply-abort))
-         )
+         (struct-out header)
+         (struct-out message)
+         make-response-header
+         make-response)
 
-(define unknown-message-type/c
-  (symbols 'status
-           'stream
-           'execute_result
-           'pyout
-           'pyin
-           'clear_output
-           'comm_open
-           'comm_msg
-           'comm_close))
-
-(define request-message-type/c
+;; Message types
+(define shell-in-message-type/c
   (symbols 'kernel_info_request
            'execute_request
            'complete_request
            'object_info_request
            'shutdown_request
-           'input_reply
            'history_request))
 
-(define reply-message-type/c
+(define shell-out-message-type/c
   (symbols 'kernel_info_reply
            'execute_reply
-           'display_data
            'complete_reply
            'object_info_reply
            'shutdown_reply
-           'input_request
-           'history_reply))
+           'history_reply
+           'execute_result))
+
+(define iopub-message-type/c
+  (symbols 'display_data
+           'execute_input
+           'execute_result
+           'status
+           'clear_output
+           'stream))
+
+(define comm-message-type/c
+  (symbols 'comm_open
+           'comm_msg
+           'comm_close))
+
+(define stdin-message-type/c
+  (symbols 'input_reply
+           'input_request))
 
 (define message-type/c
-  (or/c request-message-type/c
-        reply-message-type/c
-        unknown-message-type/c))
+  (or/c shell-in-message-type/c
+        shell-out-message-type/c
+        iopub-message-type/c
+        comm-message-type/c
+        stdin-message-type/c))
 
+
+;; IPython message header.
+(define-struct/contract header
+  ([identifiers (listof bytes?)]
+   [parent-header any/c] ;; (recursive-contract (or/c false/c header?))]
+   [metadata (hash/c string? string?)]
+   [message-id string?] ;; uuid-string?
+   [session-id string?] ;; uuid-string?
+   [username string?]
+   [msg-type message-type/c])
+  #:transparent)
+
+;; IPython message.
+(define-struct/contract message
+  ([header header?]
+   [content jsexpr?])
+  #:transparent)
+
+;; Make a response given a parent header, optionally overriding the
+;; message type. If the message type is not given, it is determined (if
+;; possible) from the parent message type.
+(define (make-response parent content #:msg-type [msg-type #f])
+  (define response-header
+    (make-response-header (message-header parent) #:msg-type msg-type))
+  (make-message response-header content))
+
+(define (reply-type parent-type)
+  (case parent-type
+    [(kernel_info_request) 'kernel_info_reply]
+    [(execute_request) 'execute_reply]
+    [(complete_request) 'complete_reply]
+    [(object_info_request) 'object_info_reply]
+    [(shutdown_request) 'shutdown_reply]
+    [(history_request) 'history_reply]
+    [else (error (format "No reply for message type: ~a" parent-type))]))
+
+;; Make a response header given a parent header, optionally overriding the
+;; message type. If the message type is not given, it is determined (if
+;; possible) from the parent message type.
+(define (make-response-header parent-header #:msg-type [msg-type #f])
+  (make-header
+   (header-identifiers parent-header)
+   parent-header
+   (make-hasheq)
+   (uuid-generate)
+   (header-session-id parent-header)
+   (header-username parent-header)
+   (if msg-type msg-type (reply-type (header-msg-type parent-header)))))
+
+
+;; Mime-types that might show up in output to IPython notebooks.
 (define mime-type/c
   (symbols 'application/json
            'application/pdf
@@ -72,41 +125,3 @@
            'video/mpeg
            'video/mp4))
 
-; (define request-message/c
-;   (or/c execute-request?))
-; 
-; (define reply-message/c
-;   (or/c execute-reply/c))
-; 
-; (define-struct/contract execute-request
-;   ([code string?]
-;    [silent boolean?]
-;    [store-history boolean?]
-;    [user-expressions hash?] ;; XXX what is this?
-;    [allow-stdin boolean?]
-;    [stop-on-error boolean?])
-;   #:transparent)
-; 
-; (define execute-reply-status/c
-;   (symbols 'ok 'error 'abort))
-; 
-; (define execute-reply/c
-;   (or execute-reply-ok?
-;       execute-reply-error?
-;       execute-reply-abort?))
-; 
-; (define-struct/contract execute-reply-ok
-;   ([execution-count exact-nonnegative-integer?]
-;    [user-expressions hash?]) ;; XXX what is this?
-;   #:transparent)
-; 
-; (define-struct/contract execute-reply-error
-;   ([execution-count exact-nonnegative-integer?]
-;    [ename string?]
-;    [evalue string?]
-;    [traceback (listof string?)])
-;   #:transparent)
-; 
-; (define-struct/contract execute-reply-abort
-;   ([execution-count exact-nonnegative-integer?])
-;   #:transparent)

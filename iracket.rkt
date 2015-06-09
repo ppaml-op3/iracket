@@ -13,56 +13,16 @@
          net/base64
          net/zmq
          libuuid
-         "./ipython-services.rkt"
+         (prefix-in ipy: "./ipython-message.rkt")
+         (prefix-in ipy: "./ipython-services.rkt")
          (prefix-in ipy: "./ipython.rkt"))
 
 (provide main)
 
-(define (make-response parent content #:msg-type [msg-type #f])
-  (define reply-header
-    (make-reply-header (ipy:message-header parent) #:msg-type msg-type))
-  (ipy:make-message reply-header content))
-
-(define (reply-type parent-type)
-  (case parent-type
-    [(kernel_info_request) 'kernel_info_reply]
-    [(execute_request) 'execute_reply]
-    [(complete_request) 'complete_reply]
-    [(object_info_request) 'object_info_reply]
-    [(shutdown_request) 'shutdown_reply]
-    [(history_request) 'history_reply]
-    [else (error (format "No reply for message type: ~a" parent-type))]))
-
-(define (make-reply-header parent-header #:msg-type [msg-type #f])
-  (ipy:make-header
-   (ipy:header-identifiers parent-header)
-   parent-header
-   (make-hasheq)
-   (uuid-generate)
-   (ipy:header-session-id parent-header)
-   (ipy:header-username parent-header)
-   (if msg-type msg-type (reply-type (ipy:header-msg-type parent-header)))))
-
-
-(define (send-stream msg iopub stream str)
-  (thread-send iopub
-               (make-response msg (hasheq 'name stream
-                                          'text str)
-                              #:msg-type 'stream)))
-
-(define (send-exec-result msg iopub execution-count data)
-  (thread-send iopub
-               (make-response msg (hasheq 'execution_count execution-count
-                                          'data data
-                                          'metadata (hasheq))
-                              #:msg-type 'execute_result)))
-
-(define execution-count 0)
-
 (define (main config-file-path)
   ;; ipython hides stdout, but prints stderr, so this is for debugging
   (current-output-port (current-error-port))
-  (print "Kernel starting.\n")
+  (display "Kernel starting.\n")
   (define cfg (with-input-from-file config-file-path ipy:read-config))
   (parameterize ([ipy:connection-key (ipy:config-key cfg)]
                  [sandbox-eval-limits (list 30 50)]
@@ -72,25 +32,17 @@
                  [sandbox-propagate-exceptions #f]
                  [sandbox-path-permissions (list (list 'read "/"))])
     (define e (make-evaluator '(begin) #:allow-for-require '(gamble gamble/viz)))
-    (call-with-services cfg (λ (services) (work cfg services e))))
-  (print "Kernel terminating."))
-
-(define (send-status services status parent-header)
-  (define out (ipython-services-iopub services))
-  (define header (make-reply-header parent-header #:msg-type 'status))
-  (define msg (ipy:make-message header (hasheq 'execution_state (symbol->string status))))
-  (thread-send out msg))
+    (ipy:call-with-services cfg (λ (services) (work cfg services e))))
+  (display "Kernel terminating.\n"))
 
 (define (work cfg services e)
-  (define (work-loop)
-    (define msg (thread-receive))
-    (define respond-to (thread-receive))
-    (send-status services 'busy (ipy:message-header msg))
+  (let loop ()
+    (define-values (msg respond-to) (ipy:receive-request services))
+    (ipy:send-status services (ipy:message-header msg) 'busy)
     (define-values (response shutdown) (handle msg cfg services e))
-    (thread-send respond-to response)
-    (send-status services 'idle (ipy:message-header msg))
-    (unless shutdown (work-loop)))
-  (work-loop))
+    (ipy:send-response services respond-to response)
+    (ipy:send-status services (ipy:message-header msg) 'idle)
+    (unless shutdown (loop))))
 
 (define (handle msg cfg services e)
   (define msg-type (ipy:header-msg-type (ipy:message-header msg)))
@@ -102,7 +54,7 @@
       [(execute_request) (values (execute msg services e) #f)]
       [(complete_request) (values (complete msg services e) #f)]
       [else (error (format "unknown message type: ~a" msg-type))]))
-  (values (make-response msg resp) shutdown))
+  (values (ipy:make-response msg resp) shutdown))
 
 (define/contract (string-prefix? prefix word)
   (string? string? . -> . boolean?)
@@ -154,24 +106,15 @@
                 (make-display-convertible 'ps-bytes 'application/postscript v #:encode base64-encode)
                 (make-display-convertible 'pdf-bytes 'application/pdf v #:encode base64-encode))))
 
-(define (make-ipython-stream-port iopub port-name stream-name orig-msg)
-  (make-output-port
-   port-name
-   iopub
-   (λ (bstr start end enable-buffer? enable-break?)
-     (send-stream orig-msg iopub stream-name
-                  (bytes->string/utf-8 (subbytes bstr start end)))
-     (- end start))
-   void))
+(define execution-count 0)
 
 (define (execute msg services e)
-  (define iopub (ipython-services-iopub services))
   (set! execution-count (add1 execution-count))
   (define code (hash-ref (ipy:message-content msg) 'code))
   (call-in-sandbox-context e
    (λ ()
-     (current-output-port (make-ipython-stream-port iopub "pyout" "stdout" msg))
-     (current-error-port (make-ipython-stream-port iopub "pyerr" "stderr" msg))))
+     (current-output-port (ipy:make-stream-port services 'stdout msg))
+     (current-error-port (ipy:make-stream-port services 'stderr msg))))
   (call-with-values
    (λ () (e code))
    (λ vs
@@ -179,8 +122,8 @@
        [(list (? void?)) void]
        [else (for ([v (in-list vs)])
                (define results (make-display-results v))
-               (send-exec-result msg iopub execution-count
-                                 (make-hasheq results)))])))
+               (ipy:send-exec-result msg services execution-count
+                                     (make-hasheq results)))])))
   (hasheq
    'status "ok"
    'execution_count execution-count

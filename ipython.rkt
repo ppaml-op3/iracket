@@ -8,8 +8,6 @@
          "./ipython-message.rkt")
 
 (provide (struct-out config)
-         (struct-out header)
-         (struct-out message)
          read-config
          connection-key
          receive-message!
@@ -28,24 +26,6 @@
    [key bytes?])
   #:transparent)
 
-
-;; IPython message header.
-(define-struct/contract header
-  ([identifiers (listof bytes?)]
-   [parent-header any/c] ;; (recursive-contract (or/c false/c header?))]
-   [metadata (hash/c string? string?)]
-   [message-id string?] ;; (uuid)
-   [session-id string?] ;; (uuid)
-   [username string?]
-   [msg-type message-type/c])
-  #:transparent)
-
-;; IPython message.
-(define-struct/contract message
-  ([header header?]
-   [content jsexpr?])
-  #:transparent)
-
 ;; Parses an IPython configuration from (current-input-port).
 (define/contract (read-config)
   (-> config?)
@@ -61,9 +41,11 @@
    (hash-ref config-json 'iopub_port)
    (string->bytes/utf-8 (hash-ref config-json 'key))))
 
+
 ;; Key for the connection to IPython. (or/c bytes? false/c).
 (define connection-key (make-parameter #f))
 
+;; Delimeter between IPython ZMQ message identifiers and message body.
 (define message-delimiter (string->bytes/utf-8 "<IDS|MSG>"))
 
 ;; Receives an IPython message on the given socket.
@@ -85,10 +67,37 @@
   (define parent-header (next))
   (define metadata (next))
   (define content (next))
-  (printf "received: ~a\n" content)
   (parse-message sig idents header-data parent-header
                  metadata content))
 
+;; Sends the given IPython message on the given socket.
+(define/contract (send-message! socket msg)
+  (socket? message? . -> . void?)
+  (define (send-piece! data)
+    (socket-send! socket data #:flags '(SNDMORE)))
+  (define (send-last! data)
+    (socket-send! socket data))
+  (define header (message-header msg))
+  (define idents (header-identifiers header))
+  (define header-bytes (jsexpr->bytes (header->jsexpr header)))
+  (define parent-bytes (jsexpr->bytes (header->jsexpr (header-parent-header header))))
+  (define metadata (jsexpr->bytes (header-metadata header)))
+  (define content (jsexpr->bytes (message-content msg)))
+  (define key (connection-key))
+  (define sig
+    (cond [key (hash-message (connection-key)
+                            header-bytes parent-bytes metadata content)]
+          [else (string->bytes/utf-8 "")]))
+  (for ([ident (in-list idents)]) (send-piece! ident))
+  (send-piece! message-delimiter)
+  (send-piece! sig)
+  (send-piece! header-bytes)
+  (send-piece! parent-bytes)
+  (send-piece! metadata)
+  (send-last! content))
+
+
+;; helpers for parsing/unparsing messages
 (define (parse-header idents header parent-header metadata)
   (define parent-result
     (cond [(hash-empty? parent-header) #f]
@@ -123,29 +132,4 @@
              'msg_type (symbol->string (header-msg-type hd))
              'version "5.0")]
         [else (hasheq)]))
-
-;; Sends the given IPython message on the given socket.
-(define/contract (send-message! socket msg)
-  (socket? message? . -> . void?)
-  (define (send-piece! data)
-    (socket-send! socket data #:flags '(SNDMORE)))
-  (define (send-last! data)
-    (socket-send! socket data))
-  (define header (message-header msg))
-  (define idents (header-identifiers header))
-  (define header-bytes (jsexpr->bytes (header->jsexpr header)))
-  (define parent-bytes (jsexpr->bytes (header->jsexpr (header-parent-header header))))
-  (define metadata (jsexpr->bytes (header-metadata header)))
-  (define content (jsexpr->bytes (message-content msg)))
-  (define key (connection-key))
-  (define sig
-    (cond [key (hash-message (connection-key)
-                            header-bytes parent-bytes metadata content)]
-          [else (string->bytes/utf-8 "")]))
-  (for ([ident (in-list idents)]) (send-piece! ident))
-  (send-piece! message-delimiter)
-  (send-piece! sig)
-  (send-piece! header-bytes)
-  (send-piece! parent-bytes)
-  (send-piece! metadata)
-  (send-last! content))
+;; end helpers for parsing messages

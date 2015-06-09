@@ -19,7 +19,7 @@
   (display "Kernel starting.\n")
   (define cfg (with-input-from-file config-file-path ipy:read-config))
   (parameterize ([ipy:connection-key (ipy:config-key cfg)]
-                 [sandbox-eval-limits (list 30 50)]
+                 [sandbox-eval-limits (list #f #f)]
                  [sandbox-memory-limit 200]
                  [sandbox-propagate-exceptions #f]
                  [sandbox-namespace-specs (list sandbox-make-namespace 'file/convertible)]

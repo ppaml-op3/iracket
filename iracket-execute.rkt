@@ -37,8 +37,20 @@
                 (make-display-convertible 'ps-bytes 'application/postscript v #:encode base64-encode)
                 (make-display-convertible 'pdf-bytes 'application/pdf v #:encode base64-encode))))
 
+(define (make-kill-thread/custodian cust)
+  (λ (t)
+    (parameterize ([current-custodian cust])
+      (kill-thread t))))
+
 (define (make-execute services e)
   (define execution-count 0)
+  (define user-cust (get-user-custodian e))
+  ;; let other cells' threads be killed
+  (call-in-sandbox-context e
+   (λ ()
+     (eval
+      `(define notebook-kill-thread
+         ,(make-kill-thread/custodian user-cust)))))
   (λ (msg)
     (set! execution-count (add1 execution-count))
     (define code (hash-ref (ipy:message-content msg) 'code))

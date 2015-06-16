@@ -26,10 +26,16 @@
       (cons mime-type (bytes->string/latin-1 (encode result)))
       #f))
 
+(define (make-display-c3 v)
+  (match v
+    [`(c3-data . ,d) (cons 'application/x-c3-data (jsexpr->string d))]
+    [else #f]))
+
 (define (make-display-results v)
   (filter values
           (list (or (make-display-convertible 'text 'text/plain v)
                     (make-display-text v))
+                (make-display-c3 v)
                 ; svg seems to be broken in tons of browsers
                 ; (make-display-convertible 'svg-bytes 'image/svg+xml v)
                 (make-display-convertible 'png-bytes 'image/png v #:encode base64-encode)

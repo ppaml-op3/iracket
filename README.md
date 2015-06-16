@@ -36,15 +36,16 @@ profile, then run the following:
 
 ```bash
 IPYTHON_PROFILE=
-cp static/ic3.js $(ipython locate)/nbextension/ic3.js
-cat static/custom.js >> $(ipython locate profile IPYTHON_PROFILE)/custom/custom.js
-curl -L https://github.com/mbostock/d3/raw/v3.5.5/d3.min.js > $(ipython locate profile IPYTHON_PROFILE)/static/d3.js
-curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.js > $(ipython locate profile IPYTHON_PROFILE)/static/c3.js
-curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.css > $(ipython locate profile IPYTHON_PROFILE)/static/c3.css
+IPYTHON_PROFILE_STATIC=$(ipython locate profile $IPYTHON_PROFILE)/static
+cp ./static/ic3.js $(ipython locate)/nbextensions/ic3.js
+cat ./static/custom.js >> $IPYTHON_PROFILE_STATIC/custom/custom.js
+curl -L https://github.com/mbostock/d3/raw/v3.5.5/d3.min.js > $IPYTHON_PROFILE_STATIC/d3.js
+curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.js > $IPYTHON_PROFILE_STATIC/c3.js
+curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.css > $IPYTHON_PROFILE_STATIC/c3.css
 ```
 
 This script will
-* copy the nbextension for C3 into your IPython nbextension folder,
+* copy the nbextension for C3 into your IPython nbextensions folder,
 * append the code for loading the extension to your IPython profile's
   custom.js, and
 * add the required D3 and C3 code to your IPython profile's static resources

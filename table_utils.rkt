@@ -137,10 +137,7 @@
 
 
 
-     
-     
-     
-     
+        
 
 ;; TODO: Make this not compute every distance twice!
 (define (distance-table representation-table factors object-names)
@@ -155,10 +152,7 @@
 
 
 
-
-
-               
-                   
+                
 
 ;; Use the table to get the mean value of each attribute.  Every entry in the table
 ;; is assumed to be of the form object . attribute --> value

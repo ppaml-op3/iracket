@@ -68,7 +68,7 @@ To display C3 charts, evaluate a `cons` cell whose `car` is the symbol
 `'c3-data` and whose `cdr` is a `jsexpr` (from the `json` package) of the data
 structure to pass to C3's `generate` function.
 
-Example
+Example:
 ```racket
 (cons 'c3-data
       (hasheq 'data
@@ -77,10 +77,19 @@ Example
                             (list "data2" 50 20 10 40 15 25)))))
 ```
 
+For more information on C3's data format, see
+[the C3 reference](http://c3js.org/reference.html), or for examples see
+[the C3 examples page](http://c3js.org/examples.html). For information
+on how to write JSON in Racket, see the Racket
+[JSON package documentation](http://docs.racket-lang.org/json/index.html).
+
+Note that certain C3 features are not currently usable because they rely
+on using Javascript functions, which are not expressible in JSON.
+
 
 # Using the kernel
 
-Run the ipython notebook server as you usually do, e.g.
+Run the IPython notebook server as you usually do, e.g.
 ```bash
 ipython notebook
 ```

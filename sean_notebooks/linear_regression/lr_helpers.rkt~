@@ -1,0 +1,30 @@
+(module lr_helpers racket
+  
+  (require math/distributions
+           math/statistics
+           racket/list
+           racket/port
+           racket/vector)
+  
+  (provide samples-summary)
+
+
+(define (info-as-list smplr)
+  (let ([str (with-output-to-string (lambda () (begin
+                                               (send lr info)
+                                               "done")))])
+      (let ([n-total-samples 
+             (string->number 
+              (second (regexp-match #rx"(?:Total runs: )([0-9]+)" str)))]
+            [n-accepted-samples 
+             (string->number 
+              (second (regexp-match #rx"(?:Accepted traces: )([0-9]+)" str)))]
+            [scale-increases (string->number 
+              (second (regexp-match #rx"(?:Scale increased: )([0-9]+)" str)))]
+            [scale-decreases (string->number 
+              (second (regexp-match #rx"(?:Scale decreased: )([0-9]+)" str)))]
+            [scale-no-changes (string->number 
+              (second (regexp-match #rx"(?:Scale maintained: )([0-9]+)" str)))])
+        (list n-total-samples n-accepted-samples scale-increases 
+              scale-decreases scale-no-changes))))
+

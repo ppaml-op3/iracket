@@ -8,9 +8,9 @@ IRacket is a Racket kernel for IPython/Jupyter.
 
 * [Racket v6](http://racket-lang.org)
 * These Racket packages installed (via `raco pkg install`):
-    * [`git://github.com/greghendershott/sha#master`](https://github.com/greghendershott/sha#master)
-    * [`git://github.com/tgiannak/racket-libuuid#osx-compat`](https://github.com/tgiannak/racket-libuuid#osx-compat)
-    * [`git://github.com/tgiannak/racket-zeromq#wait-on-fd`](https://github.com/tgiannak/racket-zeromq#wait-on-fd)
+    * [`git://github.com/greghendershott/sha.git`](https://github.com/greghendershott/sha)
+    * [`git://github.com/mordae/racket-libuuid.git`](https://github.com/mordae/racket-libuuid)
+    * [`git://github.com/tgiannak/racket-zeromq.git#wait-on-fd`](https://github.com/tgiannak/racket-zeromq#wait-on-fd)
 * [ZeroMQ](http://zeromq.org)
 
 ## Installation steps

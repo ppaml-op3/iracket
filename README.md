@@ -51,9 +51,12 @@ IPYTHON_PROFILE=
 IPYTHON_PROFILE_STATIC=$(ipython locate profile $IPYTHON_PROFILE)/static
 cp ./static/ic3.js $(ipython locate)/nbextensions/ic3.js
 cat ./static/custom.js >> $IPYTHON_PROFILE_STATIC/custom/custom.js
-curl -L https://github.com/mbostock/d3/raw/v3.5.5/d3.min.js > $IPYTHON_PROFILE_STATIC/d3.js
-curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.js > $IPYTHON_PROFILE_STATIC/c3.js
-curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.css > $IPYTHON_PROFILE_STATIC/c3.css
+curl -L https://github.com/mbostock/d3/raw/v3.5.5/d3.min.js \
+    > $IPYTHON_PROFILE_STATIC/d3.js
+curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.js \
+    > $IPYTHON_PROFILE_STATIC/c3.js
+curl -L https://github.com/masayuki0812/c3/raw/0.4.10/c3.min.css \
+    > $IPYTHON_PROFILE_STATIC/c3.css
 ```
 
 This script will

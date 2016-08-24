@@ -12,6 +12,7 @@ IRacket is a Racket kernel for IPython/Jupyter.
     * [`git://github.com/mordae/racket-libuuid.git`](https://github.com/mordae/racket-libuuid)
     * [`git://github.com/tgiannak/racket-zeromq.git#wait-on-fd`](https://github.com/tgiannak/racket-zeromq#wait-on-fd)
 * [ZeroMQ](http://zeromq.org)
+* [IPython version 3.2.1](https://pypi.python.org/pypi/ipython/3.2.1)
 
 ## Installation steps
 
